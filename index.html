@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Nuestra casa 3D</title>
+<style>
+:root{--ink:#1d2430;--panel:rgba(255,255,255,.9);--chip:#e4e9f0;--accent:#2f6fed;--onaccent:#fff}
+@media (prefers-color-scheme:dark){:root{--ink:#eef2f8;--panel:rgba(22,26,34,.9);--chip:#2b3240;--accent:#6c9bff;--onaccent:#0d1320}}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:#dfe9f3;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink)}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+#top{position:fixed;left:0;right:0;top:0;display:flex;justify-content:space-between;align-items:center;padding:calc(env(safe-area-inset-top,0px) + 10px) 12px 0;pointer-events:none}
+#top>*{pointer-events:auto}
+#top b{background:var(--panel);padding:8px 12px;border-radius:12px;font-size:15px}
+#top span{display:flex;gap:6px}
+button{font:inherit;font-size:14px;border:0;border-radius:999px;padding:8px 13px;background:var(--chip);color:var(--ink);cursor:pointer;flex:none}
+button.on{background:var(--accent);color:var(--onaccent)}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+#top button{background:var(--panel)}
+#top button.on{background:var(--accent)}
+#panel{position:fixed;left:8px;right:8px;bottom:calc(env(safe-area-inset-bottom,0px) + 8px);background:var(--panel);border-radius:16px;padding:10px;display:grid;gap:8px;backdrop-filter:blur(8px)}
+.row{display:flex;align-items:center;gap:8px}
+.row label{font-size:12px;opacity:.7;width:54px;flex:none}
+.sc{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px}
+.sc::-webkit-scrollbar{display:none}
+.sep{width:1px;background:var(--chip);flex:none;margin:0 2px}
+#toast{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 58px);transform:translateX(-50%);background:var(--panel);padding:7px 14px;border-radius:999px;font-size:13px;opacity:0;transition:opacity .25s;pointer-events:none;white-space:nowrap}
+</style>
+</head>
+<body>
+<div id="top"><b id="title">Nuestra casa</b><span><button id="dn" title="Día / noche">☀️</button><button id="au" class="on">Auto</button></span></div>
+<div id="toast"></div>
+<div id="panel">
+  <div class="row"><label>Cámara</label><div class="sc" id="cams"></div></div>
+  <div class="row"><label>Mover a</label><div class="sc" id="go"></div></div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const TITLE="Nuestra casa";
+document.getElementById('title').textContent=TITLE;document.title=TITLE;
+const $=s=>document.querySelector(s),clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+/* ---------- escena ---------- */
+const scene=new THREE.Scene();scene.background=new THREE.Color(0xdfe9f3);
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;
+document.body.prepend(renderer.domElement);
+const cv=renderer.domElement,camera=new THREE.PerspectiveCamera(45,1,.1,200);
+const hemi=new THREE.HemisphereLight(0xffffff,0x9aa4b2,.95),sun=new THREE.DirectionalLight(0xffffff,.8);
+sun.position.set(6,16,12);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);
+Object.assign(sun.shadow.camera,{left:-14,right:14,top:14,bottom:-14,far:50});
+sun.target.position.set(7.5,0,2);scene.add(hemi,sun,sun.target);
+
+const M=(c,o={})=>new THREE.MeshStandardMaterial(Object.assign({color:c,roughness:.75},o));
+function box(w,h,d,x,y,z,mat,parent){const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);m.position.set(x,y,z);m.castShadow=m.receiveShadow=true;(parent||scene).add(m);return m}
+const C={black:M(0x1b1b1f),white:M(0xf4f4f2),wall:M(0xf6f3ee),grey:M(0x8fa6a5),blue:M(0x4f86c6),wood:M(0xe7e2d8)};
+
+/* ---------- pisos y paredes ---------- */
+function tileTex(w,d){const c=document.createElement('canvas');c.width=c.height=128;const g=c.getContext('2d');g.fillStyle='#f3f3f1';g.fillRect(0,0,128,128);g.strokeStyle='#cfd2d4';g.lineWidth=3;g.strokeRect(0,0,128,128);const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(w/.6,d/.6);return t}
+function floor(x1,z1,x2,z2,color){const w=x2-x1,d=z2-z1,m=new THREE.Mesh(new THREE.PlaneGeometry(w,d),new THREE.MeshStandardMaterial(color?{color,roughness:.9}:{map:tileTex(w,d),roughness:.45}));m.rotation.x=-Math.PI/2;m.position.set((x1+x2)/2,0,(z1+z2)/2);m.receiveShadow=true;scene.add(m)}
+function wall(a1,a2,c,horiz,gaps=[],h=1.7){const segs=[];let p=a1;gaps.slice().sort((u,v)=>u[0]-v[0]).forEach(g=>{if(g[0]>p)segs.push([p,g[0]]);p=g[1]});if(a2>p)segs.push([p,a2]);
+  segs.forEach(([s,e])=>{const l=e-s+.12,m=(s+e)/2;horiz?box(l,h,.12,m,h/2,c,C.wall):box(.12,h,l,c,h/2,m,C.wall)})}
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(80,80),M(0xc9d3de));ground.rotation.x=-Math.PI/2;ground.position.set(7.5,-.02,2);ground.receiveShadow=true;scene.add(ground);
+floor(0,0,5,4);floor(5,0,7,2);floor(7,0,10.5,2);floor(5,2,11,3);floor(11,0,15,4.5);floor(1.8,-1.5,3.8,0,0xb5654a);
+wall(0,5,0,true,[[2.2,3.4]]);wall(0,4,0,false);wall(0,5,4,true);wall(0,4,5,false,[[2,3]]);   // sala
+wall(5,11,2,true,[[5.5,6.5],[8,9]]);wall(5,11,3,true);wall(5,7,0,true);wall(7,10.5,0,true);wall(0,2,7,false);wall(0,2,10.5,false); // pasillo, baño, cocina
+wall(0,4.5,11,false,[[2,3]]);wall(11,15,0,true);wall(11,15,4.5,true);wall(0,4.5,15,false);   // habitación
+wall(1.8,3.8,-1.5,true,[],.9);wall(-1.5,0,1.8,false,[],.9);wall(-1.5,0,3.8,false,[],.9);       // balcón
+
+/* ---------- interacción: toast, puertas, luces ---------- */
+let tt;function toast(t){const e=$('#toast');e.textContent=t;e.style.opacity=1;clearTimeout(tt);tt=setTimeout(()=>e.style.opacity=0,1600)}
+const doors=[];
+function door(x,z,alongX,ang,name,mat,open){const p=new THREE.Group();p.position.set(x,0,z);scene.add(p);
+  alongX?box(1,1.6,.06,.5,.8,0,mat,p):box(.06,1.6,1,0,.8,.5,mat,p);
+  p.userData={t:open?ang:0,ang,onClick(){this.t=this.t?0:this.ang;toast(name+(this.t?' abierta':' cerrada'))}};p.rotation.y=p.userData.t;doors.push(p);return p}
+const doorM=M(0xffffff),glass=M(0xbfe3ff,{transparent:true,opacity:.45});
+const bathDoor=door(5.5,2,true,Math.PI/2,'Puerta del baño',doorM,true);
+const bedDoor=door(11,2,false,Math.PI/2,'Puerta de la habitación',doorM,true);
+const balDoor=door(2.2,0,true,Math.PI/2,'Puerta del balcón',glass,false);
+const lamps={};
+function lamp(n,x,z,label,I=.8){const l=new THREE.PointLight(0xfff1d6,I,9);l.position.set(x,2.1,z);scene.add(l);
+  const b=new THREE.Mesh(new THREE.SphereGeometry(.14,16,12),new THREE.MeshBasicMaterial({color:0xffe9a8}));b.position.copy(l.position);scene.add(b);
+  lamps[n]={l,b,on:true,I};b.userData.onClick=()=>{setLamp(n);toast('Luz '+label+(lamps[n].on?' encendida':' apagada'))}}
+function setLamp(n,v){const o=lamps[n];o.on=v===undefined?!o.on:v;o.l.intensity=o.on?o.I:0;o.b.material.color.set(o.on?0xffe9a8:0x555b66)}
+lamp('sala',2.5,2,'de la sala');lamp('pasillo',8,2.5,'del pasillo',.6);lamp('hab',13,2.2,'de la habitación');lamp('cocina',8.7,1,'de la cocina',.7);lamp('bano',6,1,'del baño',.6);
+
+/* ---------- muebles ---------- */
+function chair(x,z,ry,mat){const g=new THREE.Group();g.position.set(x,0,z);g.rotation.y=ry;scene.add(g);box(.42,.06,.42,0,.45,0,mat,g);box(.42,.5,.06,0,.75,-.2,mat,g);[[-.18,-.18],[.18,-.18],[-.18,.18],[.18,.18]].forEach(([a,b])=>box(.04,.45,.04,a,.22,b,mat,g))}
+// sala
+box(1.6,.05,.8,1.3,.75,1,C.black);[[.55,.4],[2.05,.4],[.55,1.6],[2.05,1.6]].forEach(([x,z])=>box(.05,.75,.05,x,.37,z,C.black));
+box(.04,.2,.04,1,.88,.8,C.black);box(.56,.32,.03,1,1.04,.8,C.black);box(.52,.28,.01,1,1.04,.82,M(0xffffff,{emissive:0x9fc4ff,emissiveIntensity:.6}));
+box(.34,.02,.24,1.65,.78,1.1,C.black);const lt=box(.34,.22,.01,1.65,.89,.98,C.black);lt.rotation.x=-.25;
+chair(1.3,1.7,Math.PI,C.black);chair(2.3,1,-Math.PI/2,C.black);
+box(1.2,.5,.5,4.2,.25,.4,C.black);box(1.1,.62,.05,4.2,.85,.33,C.black);
+const tv=box(1.02,.54,.01,4.2,.85,.36,M(0x1d6b52,{emissive:0x1d6b52,emissiveIntensity:.8}));let tvOn=true;
+tv.userData.onClick=()=>{tvOn=!tvOn;tv.material.color.set(tvOn?0x1d6b52:0x050505);tv.material.emissive.set(tvOn?0x1d6b52:0);toast(tvOn?'TV encendida':'TV apagada')};
+box(.12,.5,.3,4.9,.25,1,M(0xa8552c));box(.04,.5,.05,4.9,.75,1,C.black);          // guitarra
+box(.35,1.65,.5,4.8,.83,3.3,C.black);                                              // biblioteca
+box(.6,.1,.55,4.1,.45,3.1,C.black);box(.6,.6,.08,4.1,.78,3.35,C.black);box(.52,.12,.45,4.1,.56,3.1,M(0x8a6a4f)); // silla mecedora
+box(2,.4,.9,1.5,.2,3.5,C.grey);box(2,.45,.2,1.5,.6,3.9,C.grey);box(.9,.06,.7,1.6,.43,3.45,C.blue);      // sofá cama
+// balcón
+box(.9,.04,.04,2.8,.9,-1.2,C.black);box(.04,.9,.04,2.35,.45,-1.2,C.black);box(.04,.9,.04,3.25,.45,-1.2,C.black);
+[[2.5,0xe0734a],[2.8,0x3b3b44],[3.05,0x6d7f93]].forEach(([x,c])=>box(.18,.45,.03,x,.65,-1.2,M(c)));
+// cocina
+box(2.5,.9,.6,8.55,.45,.3,M(0xe9ebee));box(.6,.02,.5,8.6,.91,.3,C.black);
+const pot=new THREE.Mesh(new THREE.CylinderGeometry(.14,.14,.14,16),M(0xbfc4ca));pot.position.set(8.6,1,.3);scene.add(pot);
+box(.6,.85,.6,10.1,.43,.3,C.white);
+// baño
+box(.9,.2,.9,5.5,.1,.5,C.white);box(.03,1.6,.9,5.97,.8,.5,M(0xe7e3e8));box(.35,.4,.45,6.7,.2,.35,C.white);box(.35,.3,.15,6.7,.55,.1,C.white);
+// habitación
+box(2,.35,1.6,13.9,.18,1.2,M(0xe8dcc6));box(1.9,.1,1,13.9,.4,1.5,M(0xd9c7a1));box(.5,.12,.3,14.5,.45,.6,C.white);
+box(1.8,1.6,.5,13.2,.8,4.2,C.wood);chair(12,3.7,0,C.black);box(.4,.45,.4,12.6,.22,.3,C.wood);
+
+/* ---------- personas ---------- */
+function label(t){const c=document.createElement('canvas');c.width=128;c.height=64;const g=c.getContext('2d');g.fillStyle='rgba(20,24,32,.85)';g.fillRect(0,8,128,48);g.fillStyle='#fff';g.font='bold 30px sans-serif';g.textAlign='center';g.fillText(t,64,43);
+  const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),transparent:true}));s.scale.set(.7,.35,1);s.position.y=2.05;return s}
+function person(name,o){
+  const g=new THREE.Group(),skin=M(o.skin),top=M(o.top),bot=M(o.bot),shoe=M(o.shoe),blk=M(0x111114);
+  box(.4,.55,.22,0,1.1,0,top,g);
+  const h=new THREE.Mesh(new THREE.SphereGeometry(.14,20,16),skin);h.position.y=1.57;h.castShadow=true;g.add(h);
+  const legs=[-1,1].map(s=>{const p=new THREE.Group();p.position.set(s*.1,.82,0);g.add(p);box(.15,.32,.17,0,-.16,0,bot,p);box(.11,.42,.13,0,-.53,0,o.longLegs?bot:skin,p);box(.15,.07,.24,0,-.78,.04,shoe,p);return p});
+  const arms=[-1,1].map(s=>{const p=new THREE.Group();p.position.set(s*.27,1.33,0);g.add(p);box(.11,.22,.11,0,-.1,0,top,p);box(.09,.3,.09,0,-.35,0,skin,p);return p});
+  if(o.cap){box(.3,.1,.3,0,1.7,0,blk,g);box(.3,.03,.18,0,1.66,.2,blk,g);box(.12,.04,.01,0,1.7,.16,M(0xc0252d),g)}
+  else{box(.3,.2,.26,0,1.62,-.04,blk,g);const b=new THREE.Mesh(new THREE.SphereGeometry(.08,12,10),blk);b.position.set(0,1.73,-.1);g.add(b);box(.26,.05,.03,0,1.58,.14,blk,g)}
+  g.add(label(name));g.userData.onClick=()=>follow(p);
+  const p={name,g,legs,arms,path:[],ph:0,timer:4+Math.random()*4,room:o.room};scene.add(g);return p}
+const him=person('Él',{skin:0xd9a273,top:0x1c1c20,bot:0x17171a,shoe:0xf1f1f1,cap:true,room:'Sala'});
+const her=person('Ella',{skin:0xd39a78,top:0x1c1c20,bot:0x4a6fa5,shoe:0x1c1c20,room:'Cocina'});
+him.g.position.set(1.3,0,1.9);her.g.position.set(8.5,0,1);
+const people=[him,her];
+
+/* ---------- rutas ---------- */
+const N={sala:[2.5,2.2],sExit:[4.6,2.5],c1:[6,2.5],c2:[8.5,2.5],c3:[11,2.5],bed:[12.6,2.7],bathD:[6.3,1.7],bath:[6.3,1.2],kitD:[8.5,1.7],kit:[8.5,1.1],balD:[2.8,.5],bal:[2.8,-.8]};
+const E=[['sala','sExit'],['sala','balD'],['balD','bal'],['sExit','c1'],['c1','c2'],['c2','c3'],['c3','bed'],['c1','bathD'],['bathD','bath'],['c2','kitD'],['kitD','kit']];
+const ROOMS={'Sala':'sala','Balcón':'bal','Cocina':'kit','Baño':'bath','Habitación':'bed'};
+const DOOR={bath:bathDoor,bed:bedDoor,bal:balDoor};
+function route(a,b){const q=[[a]],seen=new Set([a]);while(q.length){const p=q.shift(),l=p[p.length-1];if(l===b)return p;E.forEach(([u,v])=>{const n=u===l?v:v===l?u:null;if(n&&!seen.has(n)){seen.add(n);q.push([...p,n])}})}return[a]}
+function nearest(p){let b,d=1e9;for(const k in N){const e=Math.hypot(N[k][0]-p.x,N[k][1]-p.z);if(e<d){d=e;b=k}}return b}
+function goTo(p,room){const dest=ROOMS[room];p.room=room;if(DOOR[dest])DOOR[dest].userData.t=DOOR[dest].userData.ang;
+  p.path=route(nearest(p.g.position),dest).map(k=>new THREE.Vector2(...N[k]));p.timer=7+Math.random()*7}
+function step(p,dt){const g=p.g;let moving=false;
+  if(p.path.length){const t=p.path[0],dx=t.x-g.position.x,dz=t.y-g.position.z,d=Math.hypot(dx,dz);
+    if(d<.06)p.path.shift();else{moving=true;const s=Math.min(d,1.35*dt);g.position.x+=dx/d*s;g.position.z+=dz/d*s;
+      const da=((Math.atan2(dx,dz)-g.rotation.y+Math.PI*3)%(Math.PI*2))-Math.PI;g.rotation.y+=da*Math.min(1,dt*10)}}
+  p.ph+=moving?dt*9:0;const sw=moving?Math.sin(p.ph)*.7:0;
+  p.legs[0].rotation.x=sw;p.legs[1].rotation.x=-sw;p.arms[0].rotation.x=-sw*.8;p.arms[1].rotation.x=sw*.8;
+  g.position.y=moving?Math.abs(Math.sin(p.ph))*.03:0}
+
+/* ---------- cámara ---------- */
+const V=(a)=>new THREE.Vector3(...a);
+const cur={t:V([7.5,0,1.8]),r:30,th:0,ph:.85},goal={t:V([7.5,0,1.8]),r:24,th:0,ph:.85};
+let following=null,spin=false,aspect=1;
+const fit=r=>aspect<1?r*Math.min(2.2,.9/aspect):r;
+const CAMS={'Aérea':()=>({t:[7.5,0,1.8],r:fit(21),th:0,ph:.85}),'Cenital':()=>({t:[7.5,0,1.8],r:fit(20),th:0,ph:.08}),
+ 'Sala':()=>({t:[2.5,0,2],r:8,th:.35,ph:.9}),'Balcón':()=>({t:[2.8,0,-.6],r:5,th:.2,ph:.8}),'Cocina':()=>({t:[8.7,0,.9],r:6,th:.2,ph:.75}),
+ 'Baño':()=>({t:[6,0,1],r:5,th:.2,ph:.8}),'Pasillo':()=>({t:[9,0,2.5],r:7,th:-1.45,ph:1.1}),'Habitación':()=>({t:[13,0,2.2],r:6.5,th:.3,ph:.85})};
+function setCam(f){following=null;const c=f();goal.t.set(...c.t);Object.assign(goal,{r:c.r,th:c.th,ph:c.ph})}
+function follow(p){following=p;goal.r=5;goal.ph=.95;toast('Siguiendo a '+p.name)}
+const camBox=$('#cams');
+function chip(parent,txt,fn,cls){const b=document.createElement('button');b.textContent=txt;b.onclick=()=>fn(b);if(cls)b.className=cls;parent.appendChild(b);return b}
+Object.keys(CAMS).forEach(k=>chip(camBox,k,()=>setCam(CAMS[k])));
+chip(camBox,'Seguir a Él',()=>follow(him));chip(camBox,'Seguir a Ella',()=>follow(her));
+const spinB=chip(camBox,'Giro',b=>{spin=!spin;b.classList.toggle('on',spin)});
+let sel=him;const whoB=[him,her].map(p=>chip($('#go'),p.name,()=>{sel=p;whoB.forEach((b,i)=>b.classList.toggle('on',people[i]===p))},p===him?'on':''));
+$('#go').appendChild(Object.assign(document.createElement('i'),{className:'sep'}));
+Object.keys(ROOMS).forEach(k=>chip($('#go'),k,()=>{goTo(sel,k);auto=false;$('#au').classList.remove('on');toast(sel.name+' va a '+k.toLowerCase())}));
+let auto=true;$('#au').onclick=e=>{auto=!auto;e.target.classList.toggle('on',auto)};
+let night=false;$('#dn').onclick=e=>{night=!night;e.target.textContent=night?'🌙':'☀️';scene.background.set(night?0x0f1522:0xdfe9f3);ground.material.color.set(night?0x1d2533:0xc9d3de);
+  hemi.intensity=night?.28:.95;sun.intensity=night?.05:.8;if(night)Object.keys(lamps).forEach(n=>setLamp(n,true))};
+
+/* ---------- entrada táctil / mouse ---------- */
+const ptrs=new Map(),ray=new THREE.Raycaster();let moved=0,pd=0;
+const pinch=()=>{const a=[...ptrs.values()];return Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y)||1};
+cv.addEventListener('pointerdown',e=>{cv.setPointerCapture(e.pointerId);ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});moved=0;if(ptrs.size===2)pd=pinch()});
+cv.addEventListener('pointermove',e=>{const p=ptrs.get(e.pointerId);if(!p)return;const dx=e.clientX-p.x,dy=e.clientY-p.y;p.x=e.clientX;p.y=e.clientY;moved+=Math.abs(dx)+Math.abs(dy);
+  if(ptrs.size===1){goal.th-=dx*.006;goal.ph=clamp(goal.ph-dy*.006,.05,1.5)}else if(ptrs.size===2){const d=pinch();goal.r=clamp(goal.r*pd/d,3,40);pd=d}});
+cv.addEventListener('pointerup',e=>{if(ptrs.size===1&&moved<6)pick(e);ptrs.delete(e.pointerId)});
+cv.addEventListener('pointercancel',e=>ptrs.delete(e.pointerId));
+cv.addEventListener('wheel',e=>{e.preventDefault();goal.r=clamp(goal.r*(1+e.deltaY*.001),3,40)},{passive:false});
+function pick(e){ray.setFromCamera(new THREE.Vector2(e.clientX/innerWidth*2-1,-(e.clientY/innerHeight)*2+1),camera);
+  for(const h of ray.intersectObjects(scene.children,true)){let o=h.object;while(o&&!(o.userData&&o.userData.onClick))o=o.parent;if(o){o.userData.onClick.call(o.userData);return}}}
+
+/* ---------- bucle ---------- */
+function resize(){renderer.setSize(innerWidth,innerHeight);aspect=innerWidth/innerHeight;camera.aspect=aspect;camera.updateProjectionMatrix()}
+addEventListener('resize',resize);resize();setCam(CAMS['Aérea']);
+const clock=new THREE.Clock();
+(function loop(){requestAnimationFrame(loop);const dt=Math.min(clock.getDelta(),.05);
+  people.forEach(p=>{step(p,dt);if(auto&&!p.path.length){p.timer-=dt;if(p.timer<=0){const r=Object.keys(ROOMS).filter(k=>k!==p.room);goTo(p,r[Math.floor(Math.random()*r.length)])}}});
+  doors.forEach(d=>d.rotation.y+=(d.userData.t-d.rotation.y)*Math.min(1,dt*6));
+  if(following)goal.t.set(following.g.position.x,.8,following.g.position.z);if(spin)goal.th+=dt*.3;
+  const k=1-Math.exp(-dt*5);cur.t.lerp(goal.t,k);['r','th','ph'].forEach(a=>cur[a]+=(goal[a]-cur[a])*k);
+  camera.position.set(cur.t.x+cur.r*Math.sin(cur.ph)*Math.sin(cur.th),cur.t.y+cur.r*Math.cos(cur.ph),cur.t.z+cur.r*Math.sin(cur.ph)*Math.cos(cur.th));
+  camera.lookAt(cur.t);renderer.render(scene,camera)})();
+</script>
+</body>
+</html>
